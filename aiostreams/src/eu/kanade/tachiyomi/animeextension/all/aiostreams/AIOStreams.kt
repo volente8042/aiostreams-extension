@@ -589,15 +589,31 @@ class AIOStreams : ConfigurableAnimeSource, AnimeHttpSource() {
     }
 
     override fun hosterListParse(response: Response): List<Hoster> {
+        val debugEnabled = preferences.getBoolean(PREF_LOCAL_DEBUG, PREF_LOCAL_DEBUG_DEFAULT)
+        val debugInfo = if (debugEnabled) buildLocalDebugInfo() else null
+
         val localOverrideEnabled = preferences.getBoolean(PREF_LOCAL_OVERRIDE, PREF_LOCAL_OVERRIDE_DEFAULT)
         if (localOverrideEnabled) {
             val localVideo = findLocalVideoOrNull()
             if (localVideo != null) {
+                val videoList = if (debugInfo != null) {
+                    listOf(
+                        localVideo,
+                        Video(
+                            videoUrl = localVideo.videoUrl,
+                            videoTitle = "DEBUG: $debugInfo",
+                            headers = localVideo.headers,
+                            preferred = false,
+                        )
+                    )
+                } else {
+                    listOf(localVideo)
+                }
                 return listOf(
                     Hoster(
                         hosterUrl = localVideo.videoUrl,
                         hosterName = localVideo.videoTitle,
-                        videoList = listOf(localVideo),
+                        videoList = videoList,
                     )
                 )
             }
@@ -670,11 +686,13 @@ class AIOStreams : ConfigurableAnimeSource, AnimeHttpSource() {
             hosterList.add(hoster to priority)
         }
 
-        return if (preferences.getBoolean(PREF_SEADEX_SORT, PREF_SEADEX_SORT_DEFAULT)) {
+        val result = if (preferences.getBoolean(PREF_SEADEX_SORT, PREF_SEADEX_SORT_DEFAULT)) {
             hosterList.sortedBy { it.second }.map { it.first }
         } else {
             hosterList.map { it.first }
         }
+
+        return if (debugInfo != null) applyDebugInfoToHosters(result, debugInfo) else result
     }
 
     override fun videoListRequest(hoster: Hoster): Request {
@@ -698,7 +716,11 @@ class AIOStreams : ConfigurableAnimeSource, AnimeHttpSource() {
         val animeTitle = currentAnimeTitle.ifBlank { return null }
         val episodeNumber = currentEpisodeNumber
 
-        val animeDir = findBestMatchingAnimeDir(baseDir, animeTitle) ?: return null
+        val animeDir = if (isAnimeVideoDir(baseDir)) {
+            baseDir
+        } else {
+            findBestMatchingAnimeDir(baseDir, animeTitle) ?: return null
+        }
         val candidateFiles = listVideoFiles(animeDir)
         val matchedFile = when {
             currentIsMovie -> candidateFiles.firstOrNull { isMovieFile(it.name) }
@@ -776,6 +798,13 @@ class AIOStreams : ConfigurableAnimeSource, AnimeHttpSource() {
         return result
     }
 
+    private fun isAnimeVideoDir(dir: File): Boolean {
+        val supportedExtensions = setOf("avi", "flv", "mkv", "mov", "mp4", "webm", "wmv")
+        return dir.listFiles()?.any { file ->
+            file.isFile && file.extension.lowercase() in supportedExtensions
+        } ?: false
+    }
+
     private fun normalizeTitleForMatch(title: String): String {
         return title.lowercase()
             .replace(Regex("\\[[^]]*]"), " ")
@@ -803,6 +832,44 @@ class AIOStreams : ConfigurableAnimeSource, AnimeHttpSource() {
 
     private fun isMovieFile(name: String): Boolean {
         return Regex("(?i)\\b(movie|film)\\b").containsMatchIn(name)
+    }
+
+    private fun buildLocalDebugInfo(): String {
+        val configured = preferences.getString(PREF_LOCAL_ANIME_DIR, PREF_LOCAL_ANIME_DIR_DEFAULT)
+            ?.trim()
+            .orEmpty()
+        val baseDir = resolveLocalAnimeBaseDir()
+        if (baseDir == null) return "path='$configured', baseDir=null"
+
+        val animeTitle = currentAnimeTitle.ifBlank { "<blank>" }
+        val isAnimeDir = isAnimeVideoDir(baseDir)
+        val animeDir = if (isAnimeDir) baseDir else findBestMatchingAnimeDir(baseDir, animeTitle)
+        val files = animeDir?.let { listVideoFiles(it) }.orEmpty()
+        val sampleNames = files.take(5).joinToString("|") { it.name }
+
+        return "path='$configured', baseExists=${baseDir.exists()}, isDir=${baseDir.isDirectory}, isAnimeDir=$isAnimeDir, animeTitle='$animeTitle', episode=$currentEpisodeNumber, season=$currentSeasonNumber, animeDir='${animeDir?.name ?: "<none>"}', files=${files.size}, sample='$sampleNames'"
+    }
+
+    private fun applyDebugInfoToHosters(hosters: List<Hoster>, debugInfo: String): List<Hoster> {
+        if (hosters.isEmpty()) return hosters
+        val first = hosters.first()
+        val debugLine = "DEBUG: $debugInfo"
+        val updatedVideos = first.videoList?.map { video ->
+            Video(
+                videoUrl = video.videoUrl,
+                videoTitle = "${video.videoTitle}\n$debugLine",
+                headers = video.headers,
+                preferred = video.preferred,
+            )
+        }
+
+        val updatedFirst = Hoster(
+            hosterUrl = first.hosterUrl,
+            hosterName = "${first.hosterName}\n$debugLine",
+            videoList = updatedVideos,
+        )
+
+        return listOf(updatedFirst) + hosters.drop(1)
     }
 
     // ============================== Helpers ===============================
@@ -933,8 +1000,15 @@ class AIOStreams : ConfigurableAnimeSource, AnimeHttpSource() {
         EditTextPreference(screen.context).apply {
             key = PREF_LOCAL_ANIME_DIR
             title = "LocalAnime Directory"
-            summary = "Relative to storage root, e.g. AniMiru/localanime"
+            summary = "Relative to storage root, e.g. Aniyomi/localanime"
             setDefaultValue(PREF_LOCAL_ANIME_DIR_DEFAULT)
+        }.also(screen::addPreference)
+
+        SwitchPreferenceCompat(screen.context).apply {
+            key = PREF_LOCAL_DEBUG
+            title = "Local Debug Info"
+            summary = "Append local scan details to the first hoster title."
+            setDefaultValue(PREF_LOCAL_DEBUG_DEFAULT)
         }.also(screen::addPreference)
 
         EditTextPreference(screen.context).apply {
@@ -966,5 +1040,7 @@ class AIOStreams : ConfigurableAnimeSource, AnimeHttpSource() {
         private const val PREF_LOCAL_OVERRIDE_DEFAULT = true
         private const val PREF_LOCAL_ANIME_DIR = "local_anime_dir"
         private const val PREF_LOCAL_ANIME_DIR_DEFAULT = "AniMiru/localanime"
+        private const val PREF_LOCAL_DEBUG = "local_debug"
+        private const val PREF_LOCAL_DEBUG_DEFAULT = false
     }
 }
