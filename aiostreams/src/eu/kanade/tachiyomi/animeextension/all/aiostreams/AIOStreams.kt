@@ -2,6 +2,7 @@ package eu.kanade.tachiyomi.animeextension.all.aiostreams
 
 import android.app.Application
 import android.content.SharedPreferences
+import android.os.Environment
 import androidx.preference.EditTextPreference
 import androidx.preference.ListPreference
 import androidx.preference.PreferenceScreen
@@ -29,6 +30,7 @@ import org.json.JSONObject
 import uy.kohesive.injekt.Injekt
 import uy.kohesive.injekt.api.get
 import java.text.SimpleDateFormat
+import java.io.File
 import java.util.Locale
 
 class AIOStreams : ConfigurableAnimeSource, AnimeHttpSource() {
@@ -500,6 +502,9 @@ class AIOStreams : ConfigurableAnimeSource, AnimeHttpSource() {
     // ============================ Video Links =============================
 
     private var currentAnilistId: Int = 0
+    private var currentEpisodeNumber: Int? = null
+    private var currentSeasonNumber: Int? = null
+    private var currentIsMovie: Boolean = false
     private var cachedConfig: AIOStreamsConfig? = null
 
     override fun hosterListRequest(episode: SEpisode): Request {
@@ -517,6 +522,9 @@ class AIOStreams : ConfigurableAnimeSource, AnimeHttpSource() {
         val episodeNum = parts["ep"] ?: "1"
         val isMovie = episodeNum == "movie" || episodeNum == "0"
         currentAnilistId = parts["anilist"]?.toIntOrNull() ?: 0
+        currentIsMovie = isMovie
+        currentEpisodeNumber = episodeNum.toIntOrNull() ?: parts["epInSeason"]?.toIntOrNull()
+        currentSeasonNumber = parts["season"]?.toIntOrNull()
 
         val idPriority = preferences.getString(PREF_ID_PRIORITY, PREF_ID_PRIORITY_DEFAULT)!!
         val (searchId, type) = selectIdForApi(parts, idPriority, isMovie, episodeNum)
@@ -581,6 +589,20 @@ class AIOStreams : ConfigurableAnimeSource, AnimeHttpSource() {
     }
 
     override fun hosterListParse(response: Response): List<Hoster> {
+        val localOverrideEnabled = preferences.getBoolean(PREF_LOCAL_OVERRIDE, PREF_LOCAL_OVERRIDE_DEFAULT)
+        if (localOverrideEnabled) {
+            val localVideo = findLocalVideoOrNull()
+            if (localVideo != null) {
+                return listOf(
+                    Hoster(
+                        hosterUrl = localVideo.videoUrl,
+                        hosterName = localVideo.videoTitle,
+                        videoList = listOf(localVideo),
+                    )
+                )
+            }
+        }
+
         val jsonStr = response.body.string()
         val jsonObj = JSONObject(jsonStr)
         val data = jsonObj.optJSONObject("data") ?: throw Exception("API returned no data")
@@ -669,6 +691,119 @@ class AIOStreams : ConfigurableAnimeSource, AnimeHttpSource() {
         "udp://open.demonii.com:1337/announce",
         "udp://tracker.torrent.eu.org:451/announce"
     )
+
+    private fun findLocalVideoOrNull(): Video? {
+        val baseDir = resolveLocalAnimeBaseDir() ?: return null
+        if (!baseDir.exists() || !baseDir.isDirectory) return null
+        val animeTitle = currentAnimeTitle.ifBlank { return null }
+        val episodeNumber = currentEpisodeNumber
+
+        val animeDir = findBestMatchingAnimeDir(baseDir, animeTitle) ?: return null
+        val candidateFiles = listVideoFiles(animeDir)
+        val matchedFile = when {
+            currentIsMovie -> candidateFiles.firstOrNull { isMovieFile(it.name) }
+            episodeNumber != null -> candidateFiles.firstOrNull { file ->
+                val parsed = extractEpisodeNumber(file.nameWithoutExtension)
+                parsed == episodeNumber
+            }
+            else -> null
+        } ?: return null
+
+        val videoUrl = matchedFile.toURI().toString()
+        val displayName = "Local - ${matchedFile.name}"
+
+        return Video(
+            videoUrl = videoUrl,
+            videoTitle = displayName,
+            headers = null,
+            preferred = true,
+        )
+    }
+
+    private fun resolveLocalAnimeBaseDir(): File? {
+        val configured = preferences.getString(PREF_LOCAL_ANIME_DIR, PREF_LOCAL_ANIME_DIR_DEFAULT)
+            ?.trim()
+            .orEmpty()
+        if (configured.isBlank()) return null
+
+        return when {
+            configured.startsWith("/") -> File(configured)
+            configured.startsWith("content://") -> null
+            else -> File(Environment.getExternalStorageDirectory(), configured)
+        }
+    }
+
+    private fun findBestMatchingAnimeDir(baseDir: File, animeTitle: String): File? {
+        val normalizedTarget = normalizeTitleForMatch(animeTitle)
+        var bestMatch: File? = null
+        var bestScore = 0
+
+        baseDir.listFiles()?.forEach { dir ->
+            if (!dir.isDirectory || dir.name.startsWith(".")) return@forEach
+            val normalizedDir = normalizeTitleForMatch(dir.name)
+            val score = when {
+                normalizedDir == normalizedTarget -> 3
+                normalizedDir.contains(normalizedTarget) || normalizedTarget.contains(normalizedDir) -> 2
+                normalizedDir.replace("the", "") == normalizedTarget.replace("the", "") -> 1
+                else -> 0
+            }
+            if (score > bestScore) {
+                bestScore = score
+                bestMatch = dir
+            }
+        }
+
+        return bestMatch
+    }
+
+    private fun listVideoFiles(animeDir: File): List<File> {
+        val supportedExtensions = setOf("avi", "flv", "mkv", "mov", "mp4", "webm", "wmv")
+        val result = mutableListOf<File>()
+
+        animeDir.listFiles()?.forEach { file ->
+            when {
+                file.isFile && file.extension.lowercase() in supportedExtensions -> result.add(file)
+                file.isDirectory && !file.name.startsWith(".") -> {
+                    file.listFiles()?.forEach { child ->
+                        if (child.isFile && child.extension.lowercase() in supportedExtensions) {
+                            result.add(child)
+                        }
+                    }
+                }
+            }
+        }
+
+        return result
+    }
+
+    private fun normalizeTitleForMatch(title: String): String {
+        return title.lowercase()
+            .replace(Regex("\\[[^]]*]"), " ")
+            .replace(Regex("\\([^)]*\\)"), " ")
+            .replace(Regex("[^a-z0-9]+"), "")
+            .trim()
+    }
+
+    private fun extractEpisodeNumber(name: String): Int? {
+        val patterns = listOf(
+            Regex("(?i)S\\d{1,2}[ ._-]*E(\\d{1,3})"),
+            Regex("(?i)\\bEP(?:ISODE)?[ ._-]?(\\d{1,3})\\b"),
+            Regex("(?i)\\bE(\\d{1,3})\\b"),
+        )
+
+        for (pattern in patterns) {
+            val match = pattern.find(name)
+            if (match != null) return match.groupValues[1].toIntOrNull()
+        }
+
+        val cleaned = name.replace(Regex("(?i)\\b(1080|720|480|2160)p\\b"), " ")
+        val loose = Regex("\\b(\\d{1,3})\\b").find(cleaned)
+        return loose?.groupValues?.get(1)?.toIntOrNull()
+    }
+
+    private fun isMovieFile(name: String): Boolean {
+        return Regex("(?i)\\b(movie|film)\\b").containsMatchIn(name)
+    }
 
     // ============================== Helpers ===============================
 
@@ -788,6 +923,20 @@ class AIOStreams : ConfigurableAnimeSource, AnimeHttpSource() {
             setDefaultValue(PREF_MARK_FILLERS_DEFAULT)
         }.also(screen::addPreference)
 
+        SwitchPreferenceCompat(screen.context).apply {
+            key = PREF_LOCAL_OVERRIDE
+            title = "Prefer LocalAnime Files"
+            summary = "Play a local file from AniMiru/localanime when it matches the episode."
+            setDefaultValue(PREF_LOCAL_OVERRIDE_DEFAULT)
+        }.also(screen::addPreference)
+
+        EditTextPreference(screen.context).apply {
+            key = PREF_LOCAL_ANIME_DIR
+            title = "LocalAnime Directory"
+            summary = "Relative to storage root, e.g. AniMiru/localanime"
+            setDefaultValue(PREF_LOCAL_ANIME_DIR_DEFAULT)
+        }.also(screen::addPreference)
+
         EditTextPreference(screen.context).apply {
             key = PREF_TVDB_API_KEY
             title = "TVDB API Key"
@@ -813,5 +962,9 @@ class AIOStreams : ConfigurableAnimeSource, AnimeHttpSource() {
         private const val PREF_MARK_FILLERS = "mark_filler_episodes"
         private const val PREF_MARK_FILLERS_DEFAULT = false
         private const val PREF_TVDB_API_KEY = "tvdb_api_key"
+        private const val PREF_LOCAL_OVERRIDE = "local_override"
+        private const val PREF_LOCAL_OVERRIDE_DEFAULT = true
+        private const val PREF_LOCAL_ANIME_DIR = "local_anime_dir"
+        private const val PREF_LOCAL_ANIME_DIR_DEFAULT = "AniMiru/localanime"
     }
 }
