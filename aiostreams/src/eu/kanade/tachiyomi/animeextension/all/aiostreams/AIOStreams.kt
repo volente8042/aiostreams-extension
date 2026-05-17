@@ -289,6 +289,11 @@ class AIOStreams : ConfigurableAnimeSource, AnimeHttpSource() {
 
         val parsed = json.decodeFromString<AniListMediaResponse>(responseBody)
         val media = parsed.data?.Media ?: return emptyList()
+
+        if (currentAnimeTitle.isBlank()) {
+            currentAnimeTitle = media.title?.english?.takeIf { it.isNotBlank() }
+                ?: media.title?.romaji.orEmpty()
+        }
         val relations = media.relations?.edges?.filterNotNull().orEmpty()
 
         val seasonList = mutableListOf<SAnime>()
