@@ -1,6 +1,16 @@
 import org.jetbrains.kotlin.gradle.tasks.KotlinCompile
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget as KotlinJvmTarget
 
+buildscript {
+    repositories {
+        google()
+        mavenCentral()
+    }
+    dependencies {
+        classpath("com.android.tools:r8:8.2.33")
+    }
+}
+
 allprojects {
     repositories {
         mavenCentral()
