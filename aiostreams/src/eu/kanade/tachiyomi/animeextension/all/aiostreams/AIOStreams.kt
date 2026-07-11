@@ -409,7 +409,8 @@ class AIOStreams : ConfigurableAnimeSource, AnimeHttpSource() {
                 // Try AniZip for TVDB ID mapping
                 val aniZipTvdbId = try {
                     val aniZipUrl = "https://api.ani.zip/mappings?anilist_id=$currentAnilistId"
-                    val aniZipResponse = client.newCall(GET(aniZipUrl)).execute()
+                    val aniZipRequest = okhttp3.Request.Builder().url(aniZipUrl).get().build()
+                    val aniZipResponse = client.newCall(aniZipRequest).execute()
                     if (aniZipResponse.isSuccessful) {
                         val aniZipData = json.decodeFromString<AniZipResponse>(aniZipResponse.body.string())
                         aniZipData.mappings?.theTvDbId
@@ -701,7 +702,9 @@ class AIOStreams : ConfigurableAnimeSource, AnimeHttpSource() {
     }
 
     override fun videoListRequest(hoster: Hoster): Request {
-        return GET(hoster.hosterUrl.ifBlank { baseUrl }, headers)
+    val targetUrl = hoster.hosterUrl.ifBlank { throw Exception("Video URL is empty. Stream not found.") }
+    return GET(targetUrl, headers)
+}
     }
 
     override fun videoListParse(response: Response, hoster: Hoster): List<Video> {
