@@ -705,7 +705,6 @@ class AIOStreams : ConfigurableAnimeSource, AnimeHttpSource() {
     val targetUrl = hoster.hosterUrl.ifBlank { throw Exception("Video URL is empty. Stream not found.") }
     return GET(targetUrl, headers)
 }
-    }
 
     override fun videoListParse(response: Response, hoster: Hoster): List<Video> {
         return hoster.videoList.orEmpty()
