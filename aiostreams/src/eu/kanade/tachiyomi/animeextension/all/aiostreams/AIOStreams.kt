@@ -425,7 +425,7 @@ class AIOStreams : ConfigurableAnimeSource, AnimeHttpSource() {
                             mappedImdbId = mappings.optString("imdb_id", "")
                             mappedTmdbId = mappings.optString("tmdb_id", "")
                             mappedKitsuId = mappings.optString("kitsu_id", "")
-                            mappings.optString("thetvdb_id", "").ifEmpty { null }
+                            mappings.optString("thetvdb_id", "").toLongOrNull()
                         } else null
                     } else null
                 } catch (e: Exception) { null }
