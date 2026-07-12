@@ -402,38 +402,40 @@ class AIOStreams : ConfigurableAnimeSource, AnimeHttpSource() {
         val totalEpisodes = media.episodes ?: 0
         val format = media.format ?: "TV"
         
-        // Try to get TVDB data via AniZip mappings first, then TVDB search
-    var mappedMalId = ""
+        // Always fetch AniZip ID mappings (kitsu/imdb/mal/tmdb) — these are required
+        // for AIOStreams stream search and must NOT depend on the optional TVDB key.
+        var mappedMalId = ""
         var mappedImdbId = ""
         var mappedTmdbId = ""
         var mappedKitsuId = ""
 
+        val aniZipTvdbId = try {
+            val aniZipUrl = "https://api.ani.zip/mappings?anilist_id=$currentAnilistId"
+            val aniZipRequest = okhttp3.Request.Builder().url(aniZipUrl).get().build()
+            val aniZipResponse = client.newCall(aniZipRequest).execute()
+            if (aniZipResponse.isSuccessful) {
+                val responseStr = aniZipResponse.body.string()
+                val jsonObj = org.json.JSONObject(responseStr)
+                val mappings = jsonObj.optJSONObject("mappings")
+                if (mappings != null) {
+                    mappedMalId = mappings.optString("mal_id", "")
+                    mappedImdbId = mappings.optString("imdb_id", "")
+                    mappedTmdbId = mappings.optString("tmdb_id", "")
+                    mappedKitsuId = mappings.optString("kitsu_id", "")
+                    mappings.optString("thetvdb_id", "").toLongOrNull()
+                } else null
+            } else null
+        } catch (e: Exception) { null }
+
+        // TVDB is only used for optional episode metadata enrichment (titles/images),
+        // and stays gated behind the API key since it's a separate, optional feature.
         val tvdbApiKey = preferences.getString(PREF_TVDB_API_KEY, "") ?: ""
         val tvdbEpisodes = if (tvdbApiKey.isNotBlank()) {
             try {
-                // Try AniZip for TVDB ID mapping
-                val aniZipTvdbId = try {
-                    val aniZipUrl = "https://api.ani.zip/mappings?anilist_id=$currentAnilistId"
-                    val aniZipRequest = okhttp3.Request.Builder().url(aniZipUrl).get().build()
-                    val aniZipResponse = client.newCall(aniZipRequest).execute()
-                    if (aniZipResponse.isSuccessful) {
-                        val responseStr = aniZipResponse.body.string()
-                        val jsonObj = org.json.JSONObject(responseStr)
-                        val mappings = jsonObj.optJSONObject("mappings")
-                        if (mappings != null) {
-                            mappedMalId = mappings.optString("mal_id", "")
-                            mappedImdbId = mappings.optString("imdb_id", "")
-                            mappedTmdbId = mappings.optString("tmdb_id", "")
-                            mappedKitsuId = mappings.optString("kitsu_id", "")
-                            mappings.optString("thetvdb_id", "").toLongOrNull()
-                        } else null
-                    } else null
-                } catch (e: Exception) { null }
-                
                 // Use AniZip TVDB ID, or fall back to TVDB title search
                 val tvdbId = aniZipTvdbId
                     ?: TvDbApi.searchSeries(client, tvdbApiKey, currentAnimeTitle).firstOrNull()?.tvdbId
-                
+
                 if (tvdbId != null) {
                     TvDbApi.getAllEpisodes(client, tvdbApiKey, tvdbId)
                 } else {
