@@ -374,8 +374,8 @@ class AIOStreams : ConfigurableAnimeSource, AnimeHttpSource() {
         
         // Use AniList GraphQL to get basic info (episodes, format)
         val query = """
-            query ($${"$"}id: Int) {
-                Media(id: $${"$"}id, type: ANIME) {
+            query (${"$"}id: Int) {
+                Media(id: ${"$"}id, type: ANIME) {
                     id
                     title { romaji english }
                     episodes
