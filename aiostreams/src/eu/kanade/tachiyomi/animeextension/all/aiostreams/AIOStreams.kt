@@ -53,6 +53,13 @@ class AIOStreams : ConfigurableAnimeSource, AnimeHttpSource() {
         coerceInputValues = true
     }
 
+    // In-memory cache for AniZip ID-mapping lookups. Avoids re-hitting api.ani.zip
+    // every time the episode list for the same AniList ID is parsed again in one
+    // app session (e.g. re-opening the anime page). Does NOT affect per-episode
+    // playback requests (those go straight to AIOStreams and never touch AniZip).
+    private data class AniZipMapping(val mappingString: String, val tvdbId: Long?)
+    private val aniZipCache = android.util.LruCache<Int, AniZipMapping>(20)
+
     // ============================== Popular ===============================
 
     override fun popularAnimeRequest(page: Int): Request {
@@ -402,30 +409,50 @@ class AIOStreams : ConfigurableAnimeSource, AnimeHttpSource() {
         val totalEpisodes = media.episodes ?: 0
         val format = media.format ?: "TV"
         
-        // Always fetch AniZip ID mappings (kitsu/imdb/mal/tmdb) — these are required
-        // for AIOStreams stream search and must NOT depend on the optional TVDB key.
-        var mappedMalId = ""
-        var mappedImdbId = ""
-        var mappedTmdbId = ""
-        var mappedKitsuId = ""
+        // AniZip ID mappings (kitsu/imdb/mal/tmdb) are required for AIOStreams stream
+        // search and must NOT depend on the optional TVDB key. Result is cached in
+        // memory per AniList ID so re-opening the same anime's episode list within
+        // one app session doesn't re-hit api.ani.zip.
+        val cachedAniZip = aniZipCache.get(currentAnilistId)
+        val mappingString: String
+        val aniZipTvdbId: Long?
 
-        val aniZipTvdbId = try {
-            val aniZipUrl = "https://api.ani.zip/mappings?anilist_id=$currentAnilistId"
-            val aniZipRequest = okhttp3.Request.Builder().url(aniZipUrl).get().build()
-            val aniZipResponse = client.newCall(aniZipRequest).execute()
-            if (aniZipResponse.isSuccessful) {
-                val responseStr = aniZipResponse.body.string()
-                val jsonObj = org.json.JSONObject(responseStr)
-                val mappings = jsonObj.optJSONObject("mappings")
-                if (mappings != null) {
-                    mappedMalId = mappings.optString("mal_id", "")
-                    mappedImdbId = mappings.optString("imdb_id", "")
-                    mappedTmdbId = mappings.optString("tmdb_id", "")
-                    mappedKitsuId = mappings.optString("kitsu_id", "")
-                    mappings.optString("thetvdb_id", "").toLongOrNull()
+        if (cachedAniZip != null) {
+            mappingString = cachedAniZip.mappingString
+            aniZipTvdbId = cachedAniZip.tvdbId
+        } else {
+            var mappedMalId = ""
+            var mappedImdbId = ""
+            var mappedTmdbId = ""
+            var mappedKitsuId = ""
+
+            val fetchedTvdbId = try {
+                val aniZipUrl = "https://api.ani.zip/mappings?anilist_id=$currentAnilistId"
+                val aniZipRequest = okhttp3.Request.Builder().url(aniZipUrl).get().build()
+                val aniZipResponse = client.newCall(aniZipRequest).execute()
+                if (aniZipResponse.isSuccessful) {
+                    val responseStr = aniZipResponse.body.string()
+                    val jsonObj = org.json.JSONObject(responseStr)
+                    val mappings = jsonObj.optJSONObject("mappings")
+                    if (mappings != null) {
+                        mappedMalId = mappings.optString("mal_id", "")
+                        mappedImdbId = mappings.optString("imdb_id", "")
+                        mappedTmdbId = mappings.optString("tmdb_id", "")
+                        mappedKitsuId = mappings.optString("kitsu_id", "")
+                        mappings.optString("thetvdb_id", "").toLongOrNull()
+                    } else null
                 } else null
-            } else null
-        } catch (e: Exception) { null }
+            } catch (e: Exception) { null }
+
+            mappingString = buildString {
+                if (mappedMalId.isNotBlank()) append("|mal:$mappedMalId")
+                if (mappedImdbId.isNotBlank()) append("|imdb:$mappedImdbId")
+                if (mappedTmdbId.isNotBlank()) append("|tmdb:$mappedTmdbId")
+                if (mappedKitsuId.isNotBlank()) append("|kitsu:$mappedKitsuId")
+            }
+            aniZipTvdbId = fetchedTvdbId
+            aniZipCache.put(currentAnilistId, AniZipMapping(mappingString, aniZipTvdbId))
+        }
 
         // TVDB is only used for optional episode metadata enrichment (titles/images),
         // and stays gated behind the API key since it's a separate, optional feature.
@@ -461,13 +488,6 @@ class AIOStreams : ConfigurableAnimeSource, AnimeHttpSource() {
             }
         } else {
             emptySet()
-        }
-
-        val mappingString = buildString {
-            if (mappedMalId.isNotBlank()) append("|mal:$mappedMalId")
-            if (mappedImdbId.isNotBlank()) append("|imdb:$mappedImdbId")
-            if (mappedTmdbId.isNotBlank()) append("|tmdb:$mappedTmdbId")
-            if (mappedKitsuId.isNotBlank()) append("|kitsu:$mappedKitsuId")
         }
 
         val episodeList = mutableListOf<SEpisode>()
