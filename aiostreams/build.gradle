@@ -79,3 +79,11 @@ dependencies {
     implementation(project(":core"))
     compileOnly(libs.bundles.common)
 }
+
+android {
+    buildTypes {
+        release {
+            signingConfig signingConfigs.debug
+        }
+    }
+}
