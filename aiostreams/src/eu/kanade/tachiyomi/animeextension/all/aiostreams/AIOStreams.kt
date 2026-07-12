@@ -403,6 +403,11 @@ class AIOStreams : ConfigurableAnimeSource, AnimeHttpSource() {
         val format = media.format ?: "TV"
         
         // Try to get TVDB data via AniZip mappings first, then TVDB search
+    var mappedMalId = ""
+        var mappedImdbId = ""
+        var mappedTmdbId = ""
+        var mappedKitsuId = ""
+
         val tvdbApiKey = preferences.getString(PREF_TVDB_API_KEY, "") ?: ""
         val tvdbEpisodes = if (tvdbApiKey.isNotBlank()) {
             try {
@@ -412,8 +417,16 @@ class AIOStreams : ConfigurableAnimeSource, AnimeHttpSource() {
                     val aniZipRequest = okhttp3.Request.Builder().url(aniZipUrl).get().build()
                     val aniZipResponse = client.newCall(aniZipRequest).execute()
                     if (aniZipResponse.isSuccessful) {
-                        val aniZipData = json.decodeFromString<AniZipResponse>(aniZipResponse.body.string())
-                        aniZipData.mappings?.theTvDbId
+                        val responseStr = aniZipResponse.body.string()
+                        val jsonObj = org.json.JSONObject(responseStr)
+                        val mappings = jsonObj.optJSONObject("mappings")
+                        if (mappings != null) {
+                            mappedMalId = mappings.optString("mal_id", "")
+                            mappedImdbId = mappings.optString("imdb_id", "")
+                            mappedTmdbId = mappings.optString("tmdb_id", "")
+                            mappedKitsuId = mappings.optString("kitsu_id", "")
+                            mappings.optString("thetvdb_id", "").ifEmpty { null }
+                        } else null
                     } else null
                 } catch (e: Exception) { null }
                 
@@ -448,6 +461,13 @@ class AIOStreams : ConfigurableAnimeSource, AnimeHttpSource() {
             emptySet()
         }
 
+        val mappingString = buildString {
+            if (mappedMalId.isNotBlank()) append("|mal:$mappedMalId")
+            if (mappedImdbId.isNotBlank()) append("|imdb:$mappedImdbId")
+            if (mappedTmdbId.isNotBlank()) append("|tmdb:$mappedTmdbId")
+            if (mappedKitsuId.isNotBlank()) append("|kitsu:$mappedKitsuId")
+        }
+
         val episodeList = mutableListOf<SEpisode>()
         val now = System.currentTimeMillis()
         
@@ -461,7 +481,7 @@ class AIOStreams : ConfigurableAnimeSource, AnimeHttpSource() {
                         date_upload = parseDate(tvdbEp?.airDate ?: "")
                         summary = tvdbEp?.overview?.takeIf { it.isNotBlank() }
                         preview_url = tvdbEp?.imageUrl?.takeIf { it.isNotBlank() }
-                        url = "anilist:$currentAnilistId|ep:movie"
+                        url = "anilist:$currentAnilistId$mappingString|ep:movie"
                     }
                 )
             }
@@ -495,7 +515,7 @@ class AIOStreams : ConfigurableAnimeSource, AnimeHttpSource() {
                             summary = tvdbEp?.overview?.takeIf { it.isNotBlank() }
                             preview_url = tvdbEp?.imageUrl?.takeIf { it.isNotBlank() }
                             fillermark = isFiller
-                            url = "anilist:$currentAnilistId|ep:$epNum|season:${tvdbEp?.seasonNumber ?: 1}|epInSeason:${tvdbEp?.episodeNumber ?: epNum}"
+                            url = "anilist:$currentAnilistId$mappingString|ep:$epNum|season:${tvdbEp?.seasonNumber ?: 1}|epInSeason:${tvdbEp?.episodeNumber ?: epNum}"
                         }
                     )
                 }
